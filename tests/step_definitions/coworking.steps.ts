@@ -12,16 +12,28 @@ class CoworkingWorld implements TestWorld {
   app: Express = createApp(this.repository);
   response?: Response;
   reservationId?: string;
+  authTokens = new Map<string, string>();
+  userIds = new Map<string, string>();
   pendingReservation?: TestWorld["pendingReservation"];
 }
 
 setWorldConstructor(CoworkingWorld);
 
+const testPassword = "TestPassword123!";
+const adminEmail = "admin@example.test";
+const adminPassword = "AdminPassword123!";
+
 Before(function (this: TestWorld) {
   this.repository = new MemoryRepository();
-  this.app = createApp(this.repository);
+  this.app = createApp(this.repository, {
+    jwtSecret: "test-secret-with-more-than-thirty-two-characters",
+    adminEmail,
+    adminPassword,
+  });
   this.response = undefined;
   this.reservationId = undefined;
+  this.authTokens = new Map();
+  this.userIds = new Map();
   this.pendingReservation = undefined;
 });
 
@@ -38,15 +50,51 @@ function userId(name: string): string {
   return name.toLowerCase();
 }
 
+async function authFor(world: TestWorld, name: string): Promise<string> {
+  const key = userId(name);
+  const cachedToken = world.authTokens.get(key);
+  if (cachedToken) {
+    return cachedToken;
+  }
+  const email = `${key}@example.test`;
+  const registration = await request(world.app)
+    .post("/api/auth/register")
+    .send({ name, email, password: testPassword });
+  assert.equal(registration.status, 201, registration.body.error);
+  const id = registration.body.user.id as string;
+  world.userIds.set(key, id);
+  const startingBalance = key === "juan" ? 100 : key === "ana" ? 10 : 0;
+  const account = world.repository.getUser(id);
+  assert.ok(account);
+  account.balance = startingBalance;
+  const login = await request(world.app)
+    .post("/api/auth/login")
+    .send({ email, password: testPassword });
+  assert.equal(login.status, 200, login.body.error);
+  const token = login.body.accessToken as string;
+  world.authTokens.set(key, token);
+  return token;
+}
+
+async function adminToken(world: TestWorld): Promise<string> {
+  const login = await request(world.app)
+    .post("/api/auth/login")
+    .send({ email: adminEmail, password: adminPassword });
+  assert.equal(login.status, 200, login.body.error);
+  return login.body.accessToken as string;
+}
+
 async function reserve(
   world: TestWorld,
   userName: string,
   roomName: string,
   date: string,
 ): Promise<Reservation | undefined> {
+  const token = await authFor(world, userName);
   world.response = await request(world.app)
     .post("/api/reservations")
-    .send({ userId: userId(userName), roomId: roomId(roomName), date });
+    .set("Authorization", `Bearer ${token}`)
+    .send({ roomId: roomId(roomName), date });
   if (world.response.status === 201) {
     return world.response.body as Reservation;
   }
@@ -66,8 +114,13 @@ Given(
   },
 );
 
-Given("que {string} tiene saldo suficiente", function (this: TestWorld, user: string) {
-  assert.ok(this.repository.getUser(userId(user))?.balance);
+Given("que {string} tiene saldo suficiente", async function (this: TestWorld, user: string) {
+  let id = this.userIds.get(userId(user));
+  if (!id) {
+    await authFor(this, user);
+    id = this.userIds.get(userId(user));
+  }
+  assert.ok(id && this.repository.getUser(id)?.balance);
 });
 
 Given(
@@ -107,39 +160,71 @@ When("la solicitud de reserva se procesa", async function (this: TestWorld) {
 });
 
 When("cancelo la reserva de {string}", async function (this: TestWorld, user: string) {
+  const token = await authFor(this, user);
+  const ownerId = this.userIds.get(userId(user));
   const reservation = this.repository
     .listReservations()
-    .find((item) => item.userId === userId(user) && item.status === "CONFIRMED");
+    .find((item) => item.userId === ownerId && item.status === "CONFIRMED");
   assert.ok(reservation);
   this.reservationId = reservation.id;
-  this.response = await request(this.app).delete(`/api/reservations/${reservation.id}`);
+  this.response = await request(this.app)
+    .delete(`/api/reservations/${reservation.id}`)
+    .set("Authorization", `Bearer ${token}`);
 });
 
 When("cancelo la reserva {string}", async function (this: TestWorld, id: string) {
-  this.response = await request(this.app).delete(`/api/reservations/${id}`);
+  const token = await authFor(this, "Juan");
+  this.response = await request(this.app)
+    .delete(`/api/reservations/${id}`)
+    .set("Authorization", `Bearer ${token}`);
 });
 
 When("{string} consulta sus reservas", async function (this: TestWorld, user: string) {
-  this.response = await request(this.app).get("/api/reservations").query({ userId: userId(user) });
+  const token = await authFor(this, user);
+  this.response = await request(this.app)
+    .get("/api/reservations")
+    .set("Authorization", `Bearer ${token}`);
 });
 
-When("{string} agrega {float} de crédito", async function (this: TestWorld, user: string, amount: number) {
+When("el administrador agrega {float} de crédito a {string}", async function (this: TestWorld, amount: number, user: string) {
+  await authFor(this, user);
+  const targetId = this.userIds.get(userId(user));
+  assert.ok(targetId);
+  const token = await adminToken(this);
   this.response = await request(this.app)
-    .post(`/api/users/${userId(user)}/credits`)
+    .post(`/api/users/${targetId}/credits`)
+    .set("Authorization", `Bearer ${token}`)
     .send({ amount });
 });
 
 When("consulto el detalle de la reserva de {string}", async function (this: TestWorld, user: string) {
+  const token = await authFor(this, user);
+  const ownerId = this.userIds.get(userId(user));
   const reservation = this.repository
     .listReservations()
-    .find((item) => item.userId === userId(user));
+    .find((item) => item.userId === ownerId);
   assert.ok(reservation);
   this.reservationId = reservation.id;
-  this.response = await request(this.app).get(`/api/reservations/${reservation.id}`);
+  this.response = await request(this.app)
+    .get(`/api/reservations/${reservation.id}`)
+    .set("Authorization", `Bearer ${token}`);
 });
 
 When("consulto el detalle de la reserva {string}", async function (this: TestWorld, id: string) {
-  this.response = await request(this.app).get(`/api/reservations/${id}`);
+  const token = await authFor(this, "Juan");
+  this.response = await request(this.app)
+    .get(`/api/reservations/${id}`)
+    .set("Authorization", `Bearer ${token}`);
+});
+
+When("{string} consulta las reservas de {string}", async function (this: TestWorld, user: string, owner: string) {
+  const token = await authFor(this, user);
+  const ownerId = this.userIds.get(userId(owner));
+  assert.ok(ownerId);
+  this.response = await request(this.app)
+    .get("/api/reservations")
+    .query({ userId: ownerId })
+    .set("Authorization", `Bearer ${token}`);
 });
 
 When("consulto la especificación OpenAPI", async function (this: TestWorld) {
@@ -175,7 +260,8 @@ Then(
 );
 
 Then("el saldo de {string} queda en {float}", function (this: TestWorld, user: string, balance: number) {
-  const actualBalance = this.repository.getUser(userId(user))?.balance;
+  const id = this.userIds.get(userId(user));
+  const actualBalance = id ? this.repository.getUser(id)?.balance : undefined;
   assert.equal(actualBalance, balance);
 });
 

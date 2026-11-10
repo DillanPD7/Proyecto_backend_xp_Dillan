@@ -7,6 +7,8 @@ export interface TestWorld {
   app: Express;
   response?: Response;
   reservationId?: string;
+  authTokens: Map<string, string>;
+  userIds: Map<string, string>;
   pendingReservation?: {
     userId: string;
     roomId: string;

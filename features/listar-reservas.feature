@@ -8,6 +8,7 @@ Feature: Consultar mis reservas
     When "Juan" consulta sus reservas
     Then la respuesta de reservas es 200 y contiene 1 elemento
 
-  Scenario: Consultar las reservas de un usuario inexistente
-    When "fantasma" consulta sus reservas
-    Then la respuesta de reservas es 404 y error "Usuario no encontrado"
+  Scenario: No permitir consultar las reservas de otro usuario
+    Given que "Juan" tiene reservada la "Sala A" para "2099-12-04"
+    When "Ana" consulta las reservas de "Juan"
+    Then la respuesta de reservas es 403 y error "No puedes consultar las reservas de otro usuario"

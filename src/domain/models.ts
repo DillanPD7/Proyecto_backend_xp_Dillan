@@ -10,6 +10,16 @@ export interface User {
   balance: number;
 }
 
+export type UserRole = "USER" | "EDITOR" | "ADMIN";
+
+export interface AuthUser {
+  id: string;
+  name: string;
+  email: string;
+  passwordHash: string;
+  role: UserRole;
+}
+
 export type ReservationStatus = "CONFIRMED" | "CANCELLED";
 
 export interface Reservation {

@@ -1,7 +1,10 @@
-import type { Reservation, Room, User } from "../domain/models";
+import type { AuthUser, Reservation, Room, User } from "../domain/models";
 
 export class MemoryRepository {
   private users = new Map<string, User>();
+  private authUsers = new Map<string, AuthUser>();
+  private userIdsByEmail = new Map<string, string>();
+  private refreshTokens = new Map<string, { userId: string; expiresAt: number }>();
   private rooms = new Map<string, Room>();
   private reservations = new Map<string, Reservation>();
   private nextReservationId = 1;
@@ -15,6 +18,9 @@ export class MemoryRepository {
       ["juan", { id: "juan", name: "Juan", balance: 100 }],
       ["ana", { id: "ana", name: "Ana", balance: 10 }],
     ]);
+    this.authUsers.clear();
+    this.userIdsByEmail.clear();
+    this.refreshTokens.clear();
     this.rooms = new Map([
       ["sala-a", { id: "sala-a", name: "Sala A", hourlyRate: 25 }],
       ["sala-b", { id: "sala-b", name: "Sala B", hourlyRate: 10 }],
@@ -25,6 +31,37 @@ export class MemoryRepository {
 
   getUser(id: string): User | undefined {
     return this.users.get(id);
+  }
+
+  getAuthUserByEmail(email: string): AuthUser | undefined {
+    const userId = this.userIdsByEmail.get(email);
+    return userId ? this.authUsers.get(userId) : undefined;
+  }
+
+  getAuthUserById(id: string): AuthUser | undefined {
+    return this.authUsers.get(id);
+  }
+
+  saveAuthUser(user: AuthUser): boolean {
+    if (this.userIdsByEmail.has(user.email)) {
+      return false;
+    }
+    this.authUsers.set(user.id, user);
+    this.userIdsByEmail.set(user.email, user.id);
+    if (!this.users.has(user.id)) {
+      this.users.set(user.id, { id: user.id, name: user.name, balance: 0 });
+    }
+    return true;
+  }
+
+  storeRefreshToken(jti: string, userId: string, expiresAt: number): void {
+    this.refreshTokens.set(jti, { userId, expiresAt });
+  }
+
+  consumeRefreshToken(jti: string, now: number): string | undefined {
+    const token = this.refreshTokens.get(jti);
+    this.refreshTokens.delete(jti);
+    return token && token.expiresAt > now ? token.userId : undefined;
   }
 
   getRoom(id: string): Room | undefined {
